@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "nodemon server.js",
     "start": "node server.js",
-    "test": "echo \"No tests configured\""
+    "test": "echo \"No tests configured\"",
+    "build": "mkdir -p dist && cp server.js package.json package-lock.json dist/"
   },
   "keywords": [],
   "author": "",
