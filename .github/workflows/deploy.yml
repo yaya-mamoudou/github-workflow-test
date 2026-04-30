@@ -42,8 +42,10 @@ jobs:
           SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa"
           SCP="scp -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa"
 
-          # Create the deploy folder on the server if it does not exist (%q escapes spaces/special chars safely).
-          $SSH "$HOST" bash -c "mkdir -p $(printf '%q' "$TARGET")"
+          # Create the deploy folder on the server (use bash -s + $1 like below — nested " quotes break bash -c "... $TARGET ...").
+          $SSH "$HOST" bash -s -- "$TARGET" <<'EOF'
+          mkdir -p -- "$1"
+          EOF
 
           # Upload everything under dist/ into that folder.
           $SCP -r dist/* "$HOST:$TARGET"
