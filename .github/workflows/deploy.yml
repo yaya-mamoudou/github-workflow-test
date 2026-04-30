@@ -22,11 +22,30 @@ jobs:
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
       - name: Deploy to AWS
-        run: scp -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa -r dist/* ${{ secrets.USER }}@${{ secrets.HOST }}:${{ secrets.DEPLOY_DIR }}
-      - name: Restart Server
+        env:
+          DEPLOY_DIR_RAW: ${{ secrets.DEPLOY_DIR }}
         run: |
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ${{ secrets.USER }}@${{ secrets.HOST }} bash -s <<'REMOTE_SCRIPT'
+          DEPLOY_DIR="$(printf '%s' "$DEPLOY_DIR_RAW" | tr -d '\r' | sed 's/[[:space:]]*$//')"
+          if [ -z "$DEPLOY_DIR" ]; then
+            echo "DEPLOY_DIR secret is empty" >&2
+            exit 1
+          fi
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa "${{ secrets.USER }}@${{ secrets.HOST }}" bash -s -- "$DEPLOY_DIR" <<'EOF'
+          mkdir -p "$1"
+          EOF
+          scp -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa -r dist/* "${{ secrets.USER }}@${{ secrets.HOST }}:$DEPLOY_DIR"
+      - name: Restart Server
+        env:
+          DEPLOY_DIR_RAW: ${{ secrets.DEPLOY_DIR }}
+        run: |
+          DEPLOY_DIR="$(printf '%s' "$DEPLOY_DIR_RAW" | tr -d '\r' | sed 's/[[:space:]]*$//')"
+          if [ -z "$DEPLOY_DIR" ]; then
+            echo "DEPLOY_DIR secret is empty" >&2
+            exit 1
+          fi
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa "${{ secrets.USER }}@${{ secrets.HOST }}" bash -s -- "$DEPLOY_DIR" <<'REMOTE_SCRIPT'
           set -euo pipefail
+          DEPLOY_DIR_REMOTE="$1"
           export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
           if [ -s "$NVM_DIR/nvm.sh" ]; then
             . "$NVM_DIR/nvm.sh"
@@ -45,7 +64,8 @@ jobs:
             echo "npm not found after loading nvm/fnm/volta. On the server run: command -v npm; which node" >&2
             exit 127
           fi
-          cd "${{ secrets.DEPLOY_DIR }}"
+          mkdir -p "$DEPLOY_DIR_REMOTE"
+          cd "$DEPLOY_DIR_REMOTE"
           npm install --omit=dev
           if pm2 describe cloud-learn >/dev/null 2>&1; then
             pm2 restart cloud-learn
