@@ -1,76 +1,76 @@
-name:  GCP Deployment
+name: Deploy
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [main]
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: "npm"
-      - name: Install dependencies
-        run: npm ci
-      - run: npm run build
-      - name: Get ssh key and set permissions
+          cache: npm
+
+      - name: Install and build
+        run: |
+          npm ci
+          npm run build
+
+      - name: SSH key
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
-      - name: Deploy to AWS
+
+      - name: Ship to server and restart
         env:
           DEPLOY_DIR_RAW: ${{ secrets.DEPLOY_DIR }}
         run: |
-          DEPLOY_DIR="$(printf '%s' "$DEPLOY_DIR_RAW" | tr -d '\r' | sed 's/[[:space:]]*$//')"
-          if [ -z "$DEPLOY_DIR" ]; then
-            echo "DEPLOY_DIR secret is empty" >&2
-            exit 1
-          fi
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa "${{ secrets.USER }}@${{ secrets.HOST }}" bash -s -- "$DEPLOY_DIR" <<'EOF'
-          mkdir -p "$1"
-          EOF
-          scp -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa -r dist/* "${{ secrets.USER }}@${{ secrets.HOST }}:$DEPLOY_DIR"
-      - name: Restart Server
-        env:
-          DEPLOY_DIR_RAW: ${{ secrets.DEPLOY_DIR }}
-        run: |
-          DEPLOY_DIR="$(printf '%s' "$DEPLOY_DIR_RAW" | tr -d '\r' | sed 's/[[:space:]]*$//')"
-          if [ -z "$DEPLOY_DIR" ]; then
-            echo "DEPLOY_DIR secret is empty" >&2
-            exit 1
-          fi
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa "${{ secrets.USER }}@${{ secrets.HOST }}" bash -s -- "$DEPLOY_DIR" <<'REMOTE_SCRIPT'
+          # Exit on error, treat unset variables as errors, fail pipelines if any step fails.
           set -euo pipefail
-          DEPLOY_DIR_REMOTE="$1"
+
+          # Turn the secret into a single clean path (no trailing newline/spaces from the editor).
+          TARGET="$(printf '%s' "$DEPLOY_DIR_RAW" | tr -d '\r' | sed 's/[[:space:]]*$//')"
+          test -n "$TARGET"
+
+          # Reusable connection strings (this job runs on GitHub; the commands hit your server).
+          HOST="${{ secrets.USER }}@${{ secrets.HOST }}"
+          SSH="ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa"
+          SCP="scp -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa"
+
+          # Create the deploy folder on the server if it does not exist (%q escapes spaces/special chars safely).
+          $SSH "$HOST" bash -c "mkdir -p $(printf '%q' "$TARGET")"
+
+          # Upload everything under dist/ into that folder.
+          $SCP -r dist/* "$HOST:$TARGET"
+
+          # Run the block between <<'REMOTE' and REMOTE on the server. $1 is TARGET (passed after --).
+          # Quotes around 'REMOTE' stop GitHub’s runner from expanding $variables meant for the server.
+          $SSH "$HOST" bash -s -- "$TARGET" <<'REMOTE'
+          set -euo pipefail
+          cd "$1"
+
+          # Non-interactive SSH often skips nvm; load it if present.
           export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
-          if [ -s "$NVM_DIR/nvm.sh" ]; then
-            . "$NVM_DIR/nvm.sh"
-          fi
-          if [ -f "$HOME/.asdf/asdf.sh" ]; then
-            . "$HOME/.asdf/asdf.sh"
-          fi
-          if command -v fnm >/dev/null 2>&1; then
-            eval "$(fnm env)"
-          fi
-          if [ -d "$HOME/.volta" ]; then
-            export VOLTA_HOME="$HOME/.volta"
-            export PATH="$VOLTA_HOME/bin:$PATH"
-          fi
-          if ! command -v npm >/dev/null 2>&1; then
-            echo "npm not found after loading nvm/fnm/volta. On the server run: command -v npm; which node" >&2
-            exit 127
-          fi
-          mkdir -p "$DEPLOY_DIR_REMOTE"
-          cd "$DEPLOY_DIR_REMOTE"
+          [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+
+          # Fail fast if Node was installed in a way this script does not load (e.g. only fnm).
+          command -v npm >/dev/null || { echo "npm not found on server PATH"; exit 127; }
+
+          # Production deps only; devDependencies were already used on GitHub for the build.
           npm install --omit=dev
-          if pm2 describe cloud-learn >/dev/null 2>&1; then
-            pm2 restart cloud-learn
+
+          # Keep one PM2 process named "portfolio": restart if it exists, otherwise create it.
+          if pm2 describe portfolio >/dev/null 2>&1; then
+            pm2 restart portfolio
           else
-            pm2 start server.js --name cloud-learn
+            pm2 start server.js --name portfolio
           fi
+
+          # Persist the process list so PM2 brings the app back after a reboot (if pm2 startup is set).
           pm2 save
-          REMOTE_SCRIPT
+          REMOTE
