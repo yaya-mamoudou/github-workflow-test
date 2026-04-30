@@ -4,7 +4,7 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 app.get("/", (req, res) => {
-res.send(`Hello World on ${Date.UTC().toISOString()}`);
+res.send(`Hello World on ${Date.UTC().toLocaleString()}`);
 });
 
 app.get("/random-numbers", (req, res) => {
